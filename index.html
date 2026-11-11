@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>২৯ কার্ড — অনলাইন</title>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,'Noto Sans Bengali',sans-serif;background:#0d5c3a;color:#fff;min-height:100vh;padding:12px}
+.hidden{display:none!important}
+.box{background:#0a4a2e;border-radius:12px;padding:12px;margin:8px auto;max-width:760px}
+input{padding:10px;border-radius:8px;border:none;font-size:16px;width:100%;margin:4px 0}
+button{padding:10px 14px;border:none;border-radius:8px;background:#f5c542;color:#222;font-size:15px;font-weight:600;cursor:pointer;margin:4px 4px 4px 0}
+button:disabled{background:#666;color:#aaa;cursor:not-allowed}
+.seats{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;max-width:760px;margin:8px auto}
+.seat{width:44%;min-width:150px;padding:8px;border-radius:8px;background:#063620}
+.seat.turn{outline:3px solid #f5c542}
+.cards{display:flex;flex-wrap:wrap;gap:6px;justify-content:center}
+.card{width:58px;height:82px;background:#fff;color:#222;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-weight:700;font-size:18px;border:none;padding:0;margin:0}
+.card.red{color:#c0392b}
+button.card{cursor:pointer}
+button.card:disabled{opacity:.45;cursor:not-allowed}
+.small{font-size:13px;opacity:.85}
+.status{font-size:15px;margin-top:4px}
+</style>
+</head>
+<body>
+
+<div id="lobby" class="box">
+  <h2>২৯ কার্ড — অনলাইন</h2>
+  <input id="name" placeholder="আপনার নাম">
+  <button onclick="createRoom()">নতুন রুম বানান</button>
+  <hr>
+  <input id="code" placeholder="রুম কোড (৪ সংখ্যা)" inputmode="numeric">
+  <button onclick="joinRoom($('code').value.trim())">রুমে যোগ দিন</button>
+  <p id="lobbyMsg" class="small"></p>
+</div>
+
+<div id="game" class="hidden">
+  <div id="info" class="box"></div>
+  <div id="seats" class="seats"></div>
+  <div id="table"></div>
+  <div id="actions" class="box"></div>
+  <div id="hand"></div>
+</div>
+
+<script>
+/* ============ 1. Firebase config — এখানে আপনার config বসান ============ */
+const FIREBASE_CONFIG = {
+  apiKey: "PASTE_HERE",
+  authDomain: "PASTE_HERE",
+  databaseURL: "PASTE_HERE",
+  projectId: "PASTE_HERE",
+  appId: "PASTE_HERE"
+};
+firebase.initializeApp(FIREBASE_CONFIG);
+const db = firebase.database();
+const auth = firebase.auth();
+
+/* ============ 2. Constants ============ */
+const SUITS = ['♠','♥','♦','♣'];
+const RANKS = ['7','8','9','10','J','Q','K','A'];
+const PTS   = {J:3, '9':2, A:1, '10':1};
+const TORD  = {J:8, '9':7, A:6, '10':5, K:4, Q:3, '8':2, '7':1};   // তুরুপ ক্রম
+const PORD  = {A:8, '10':7, K:6, Q:5, J:4, '9':3, '8':2, '7':1};   // সাধারণ রঙের ক্রম
+
+/* ============ 3. Helpers ============ */
+let uid = null, code = null, mySeat = -1, S = null, hand = [], viewHand = [];
+const $ = id => document.getElementById(id);
+const esc = t => String(t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const cnt  = o => Object.keys(o || {}).length;
+const vals = o => Object.values(o || {});
+const nameOf = i => (S && S.seats && S.seats[i]) ? S.seats[i].name : 'খালি';
+const msg = t => { $('lobbyMsg').textContent = t; };
+
+function shuffle(a){
+  for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
+  return a;
+}
+
+/* ============ 4. Auth ============ */
+auth.onAuthStateChanged(u => {
+  if (u) {
+    uid = u.uid;
+    const saved = JSON.parse(localStorage.getItem('c29') || 'null');
+    if (saved && !code) joinRoom(saved.code, true);
+  } else {
+    auth.signInAnonymously();
+  }
+});
+
+/* ============ 5. Room ============ */
+async function createRoom(){
+  const name = $('name').value.trim() || 'খেলোয়াড়';
+  let c;
+  do { c = String(1000 + Math.floor(Math.random()*9000)); }
+  while ((await db.ref('rooms/'+c).once('value')).exists());
+  await db.ref('rooms/'+c).set({
+    host: uid, phase: 'lobby', dealer: 0,
+    seats: {0: {uid, name}}, scores: [0,0], teamPts: [0,0]
+  });
+  joinRoom(c);
+}
+
+async function joinRoom(c, silent){
+  if (code) return;
+  const name = $('name').value.trim() || 'খেলোয়াড়';
+  const ref = db.ref('rooms/'+c);
+  const snap = await ref.once('value');
+  if (!snap.exists()) {
+    if (!silent) msg('রুম পাওয়া যায়নি');
+    localStorage.removeItem('c29');
+    return;
+  }
+  let seat = -1;
+  const seats = snap.val().seats || {};
+  for (let i=0;i<4;i++) if (seats[i] && seats[i].uid === uid) seat = i;   // আগে বসা থাকলে সেই সিট
+  if (seat < 0) {
+    const r = await ref.child('seats').transaction(ss => {
+      ss = ss || {};
+      for (let i=0;i<4;i++) if (!ss[i]) { ss[i] = {uid, name}; return ss; }
+      return;                                                             // ভর্তি
+    });
+    if (!r.committed) { msg('রুম ভর্তি'); return; }
+    const ns = r.snapshot.val() || {};
+    seat = [0,1,2,3].find(i => ns[i] && ns[i].uid === uid);
+  }
+  if (seat === undefined || seat < 0) { msg('সিট পাওয়া যায়নি'); return; }
+
+  code = c; mySeat = seat;
+  localStorage.setItem('c29', JSON.stringify({code: c}));
+  $('lobby').classList.add('hidden');
+  $('game').classList.remove('hidden');
+  db.ref('rooms/'+c).on('value', x => { S = x.val(); render(); });
+  db.ref('hands/'+c+'/'+seat).on('value', x => { hand = vals(x.val()); render(); });
+}
+
+/* ============ 6. Deal ============ */
+async function deal(dealer){
+  const deck = [];
+  for (const s of SUITS) for (const r of RANKS) deck.push({s, r});
+  shuffle(deck);
+  const hands = {};
+  for (let i=0;i<4;i++) hands[i] = deck.slice(i*8, i*8+8);
+  await db.ref('hands/'+code).set(hands);
+  await db.ref('rooms/'+code).update({
+    phase: 'bidding', dealer, bidTurn: (dealer+1)%4,
+    bids: null, highBid: 15, highBidder: -1,
+    trump: null, table: null, leadSuit: null, turn: null,
+    tricks: 0, teamPts: [0,0], roundMsg: null
+  });
+}
+const startGame = () => deal(S.dealer || 0);
+const nextRound = () => deal((S.dealer + 1) % 4);
+
+/* ============ 7. Bidding — প্রতি খেলোয়াড় একবারই বিড/পাস করবে ============ */
+async function bid(v){                       // v = 0 মানে পাস
+  await db.ref('rooms/'+code).transaction(s => {
+    if (!s || s.phase !== 'bidding' || s.bidTurn !== mySeat) return;
+    s.bids = s.bids || {};
+    if (s.bids[mySeat] !== undefined) return;   // আগে একবার বিড করা হয়ে গেছে
+    s.bids[mySeat] = v;
+    if (v > s.highBid) { s.highBid = v; s.highBidder = mySeat; }
+    if (cnt(s.bids) >= 4) {
+      if (s.highBidder < 0) s.phase = 'redeal';   // সবাই পাস
+      else { s.phase = 'trump'; s.turn = s.highBidder; }
+      s.bidTurn = null;
+    } else {
+      s.bidTurn = (mySeat+1) % 4;
+    }
+    return s;
+  });
+}
+
+async function chooseTrump(suit){
+  await db.ref('rooms/'+code).transaction(s => {
+    if (!s || s.phase !== 'trump' || s.highBidder !== mySeat) return;
+    s.trump = suit; s.phase = 'playing'; s.turn = mySeat;
+    s.tricks = 0; s.teamPts = [0,0];
+    return s;
+  });
+}
+
+/* ============ 8. Play ============ */
+function legal(c){
+  const n = cnt(S.table);
+  if (n === 0 || n === 4) return true;                  // নতুন ট্রিক
+  return c.s === S.leadSuit || !hand.some(x => x.s === S.leadSuit);   // রঙ মেলানো বাধ্যতামূলক
+}
+
+function winnerOf(cards, trump, lead){
+  const hasT = cards.some(x => x.c.s === trump);
+  let best = null, bv = -1;
+  for (const x of cards) {
+    let v = 0;
+    if (hasT) { if (x.c.s === trump) v = TORD[x.c.r]; }
+    else if (x.c.s === lead) v = PORD[x.c.r];
+    if (v > bv) { bv = v; best = x; }
+  }
+  return best;
+}
+
+function finishRound(s){
+  const bt = s.highBidder % 2;
+  const pts = s.teamPts[bt];
+  const won = pts >= s.highBid;
+  const wt = won ? bt : 1-bt;
+  s.scores = s.scores || [0,0];
+  s.scores[wt] += 1;
+  s.phase = 'roundOver';
+  s.roundMsg = `দল ${bt+1} ডেকেছিল ${s.highBid}, পেয়েছে ${pts}। ${won ? 'ডাকা দল জিতেছে' : 'বিপক্ষ দল জিতেছে'}।`;
+}
+
+async function playIdx(i){ await play(viewHand[i]); }
+
+async function play(card){
+  if (!S || S.phase !== 'playing' || S.turn !== mySeat || !card || !legal(card)) return;
+  const r = await db.ref('rooms/'+code).transaction(s => {
+    if (!s || s.phase !== 'playing' || s.turn !== mySeat) return;
+    if (cnt(s.table) >= 4) { s.table = null; s.leadSuit = null; }   // আগের ট্রিক শেষ
+    s.table = s.table || {};
+    if (cnt(s.table) === 0) s.leadSuit = card.s;
+    s.table[mySeat] = card;
+    if (cnt(s.table) === 4) {
+      const cards = Object.entries(s.table).map(([k,c]) => ({seat: +k, c}));
+      const w = winnerOf(cards, s.trump, s.leadSuit);
+      const pts = cards.reduce((a,x) => a + (PTS[x.c.r] || 0), 0);
+      s.teamPts[w.seat % 2] += pts;
+      s.tricks += 1;
+      s.turn = w.seat;
+      if (s.tricks === 8) {
+        s.teamPts[w.seat % 2] += 1;          // শেষ ট্রিকের বোনাস
+        finishRound(s);
+      }
+    } else {
+      s.turn = (mySeat+1) % 4;
+    }
+    return s;
+  });
+  if (!r.committed) return;
+  const nh = hand.filter(c => !(c.s === card.s && c.r === card.r));
+  await db.ref('hands/'+code+'/'+mySeat).set(nh.length ? nh : null);
+}
+
+/* ============ 9. Render ============ */
+function bidText(i){
+  const b = S.bids && S.bids[i];
+  if (b === undefined) return '';
+  return b === 0 ? 'পাস' : `বিড ${b}`;
+}
+
+function cardHTML(c, dis, onclick){
+  const red = (c.s === '♥' || c.s === '♦') ? 'red' : '';
+  if (onclick) return `<button class="card ${red}" ${dis?'disabled':''} onclick="${onclick}">${c.r}<span>${c.s}</span></button>`;
+  return `<div class="card ${red}">${c.r}<span>${c.s}</span></div>`;
+}
+
+function statusText(){
+  const ph = S.phase;
+  if (ph === 'lobby')   return `সবাই বসলে হোস্ট খেলা শুরু করবে (${cnt(S.seats)}/৪ জন)`;
+  if (ph === 'bidding') {
+    const high = S.highBid > 15 ? `সর্বোচ্চ বিড ${S.highBid} (${esc(nameOf(S.highBidder))})` : 'এখনও কেউ বিড করেনি';
+    return (S.bidTurn === mySeat ? 'আপনার বিডের পালা' : `${esc(nameOf(S.bidTurn))}-এর বিড`) + ' · ' + high;
+  }
+  if (ph === 'trump')   return S.highBidder === mySeat ? 'আপনি বিড জিতেছেন, তুরুপ বেছে নিন' : `${esc(nameOf(S.highBidder))} তুরুপ বাছছে`;
+  if (ph === 'playing') return `${S.turn === mySeat ? 'আপনার চাল' : esc(nameOf(S.turn))+'-এর চাল'} · ডাকা ${S.highBid} · তুরুপ ${S.trump} · ট্রিক ${S.tricks||0}/৮`;
+  if (ph === 'redeal')  return 'কেউ বিড করেনি, নতুন করে তাস বণ্টন হবে';
+  if (ph === 'roundOver') return esc(S.roundMsg || '');
+  return '';
+}
+
+function render(){
+  if (!S) return;
+  const isHost = S.host === uid;
+  const ph = S.phase;
+
+  $('info').innerHTML = `
+    <b>রুম ${esc(code)}</b> &nbsp;·&nbsp; দল ১ (সিট ১ ও ৩): ${S.scores?.[0]||0} &nbsp;·&nbsp; দল ২ (সিট ২ ও ৪): ${S.scores?.[1]||0}
+    <div class="status">${statusText()}</div>
+    ${ph==='playing'||ph==='roundOver' ? `<div class="small">দল ১ এর পয়েন্ট: ${S.teamPts?.[0]||0} · দল ২: ${S.teamPts?.[1]||0}</div>` : ''}`;
+
+  $('seats').innerHTML = [0,1,2,3].map(i => `
+    <div class="seat ${ph==='playing' && S.turn===i ? 'turn' : ''}">
+      <b>${esc(nameOf(i))}</b> ${i===mySeat ? '(আপনি)' : ''}<br>
+      <span class="small">সিট ${i+1} · ${bidText(i)}${i===S.highBidder && ph!=='lobby' && ph!=='bidding' ? ' · বিডার' : ''}</span>
+    </div>`).join('');
+
+  const t = S.table || {};
+  $('table').innerHTML = cnt(t) ? `
+    <div class="box"><div class="small">টেবিলে</div>
+      <div class="cards">${[0,1,2,3].filter(i => t[i]).map(i =>
+        `<div>${cardHTML(t[i], false)}<div class="small" style="text-align:center">${esc(nameOf(i))}</div></div>`).join('')}
+      </div></div>` : '';
+
+  let act = '';
+  if (ph==='lobby' && isHost && cnt(S.seats)===4) act += `<button onclick="startGame()">খেলা শুরু</button>`;
+  if (ph==='bidding' && S.bidTurn===mySeat) {
+    for (let v=16; v<=28; v++) act += `<button ${v<=S.highBid?'disabled':''} onclick="bid(${v})">${v}</button>`;
+    act += `<button onclick="bid(0)">পাস</button>`;
+  }
+  if (ph==='trump' && S.highBidder===mySeat) {
+    act += SUITS.map(s => `<button onclick="chooseTrump('${s}')">${s}</button>`).join('');
+  }
+  if ((ph==='redeal' || ph==='roundOver') && isHost) act += `<button onclick="nextRound()">পরের রাউন্ড</button>`;
+  $('actions').innerHTML = act;
+  $('actions').classList.toggle('hidden', !act);
+
+  viewHand = hand.slice().sort((a,b) => SUITS.indexOf(a.s)-SUITS.indexOf(b.s) || RANKS.indexOf(a.r)-RANKS.indexOf(b.r));
+  const canPlay = ph==='playing' && S.turn===mySeat;
+  $('hand').innerHTML = `<div class="box"><div class="small">আপনার তাস (${hand.length})</div>
+    <div class="cards">${viewHand.map((c,i) => cardHTML(c, !(canPlay && legal(c)), `playIdx(${i})`)).join('')}</div></div>`;
+}
+</script>
+</body>
+</html>
