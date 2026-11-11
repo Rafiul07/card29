@@ -48,7 +48,7 @@ button.card:disabled{opacity:.45;cursor:not-allowed}
 </div>
 
 <script>
-/* ============ 1. Firebase config — এখানে আপনার config বসান ============ */
+/* ============ 1. Firebase config — আপনার config এখানে বসান ============ */
 const FIREBASE_CONFIG = {
   apiKey: "PASTE_HERE",
   authDomain: "PASTE_HERE",
@@ -64,21 +64,42 @@ const auth = firebase.auth();
 const SUITS = ['♠','♥','♦','♣'];
 const RANKS = ['7','8','9','10','J','Q','K','A'];
 const PTS   = {J:3, '9':2, A:1, '10':1};
-const TORD  = {J:8, '9':7, A:6, '10':5, K:4, Q:3, '8':2, '7':1};   // তুরুপ ক্রম
-const PORD  = {A:8, '10':7, K:6, Q:5, J:4, '9':3, '8':2, '7':1};   // সাধারণ রঙের ক্রম
+const TORD  = {J:8, '9':7, A:6, '10':5, K:4, Q:3, '8':2, '7':1};
+const PORD  = {A:8, '10':7, K:6, Q:5, J:4, '9':3, '8':2, '7':1};
 
-/* ============ 3. Helpers ============ */
+/* ============ 3. State & helpers ============ */
 let uid = null, code = null, mySeat = -1, S = null, hand = [], viewHand = [];
+let botHandsCache = {}, botListen = false, botTimer = null, busy = false;
+
 const $ = id => document.getElementById(id);
 const esc = t => String(t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const cnt  = o => Object.keys(o || {}).length;
 const vals = o => Object.values(o || {});
 const nameOf = i => (S && S.seats && S.seats[i]) ? S.seats[i].name : 'খালি';
+const isBot = i => !!(S && S.seats && S.seats[i] && S.seats[i].bot);
 const msg = t => { $('lobbyMsg').textContent = t; };
 
 function shuffle(a){
-  for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
+  for (let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
   return a;
+}
+
+function legalIn(c, hd, table, lead){
+  const n = cnt(table);
+  if (n === 0 || n === 4) return true;
+  return c.s === lead || !hd.some(x => x.s === lead);
+}
+
+function winnerOf(cards, trump, lead){
+  const hasT = cards.some(x => x.c.s === trump);
+  let best = null, bv = -1;
+  for (const x of cards) {
+    let v = 0;
+    if (hasT) { if (x.c.s === trump) v = TORD[x.c.r]; }
+    else if (x.c.s === lead) v = PORD[x.c.r];
+    if (v > bv) { bv = v; best = x; }
+  }
+  return best;
 }
 
 /* ============ 4. Auth ============ */
@@ -117,12 +138,12 @@ async function joinRoom(c, silent){
   }
   let seat = -1;
   const seats = snap.val().seats || {};
-  for (let i=0;i<4;i++) if (seats[i] && seats[i].uid === uid) seat = i;   // আগে বসা থাকলে সেই সিট
+  for (let i=0;i<4;i++) if (seats[i] && seats[i].uid === uid) seat = i;
   if (seat < 0) {
     const r = await ref.child('seats').transaction(ss => {
       ss = ss || {};
       for (let i=0;i<4;i++) if (!ss[i]) { ss[i] = {uid, name}; return ss; }
-      return;                                                             // ভর্তি
+      return;
     });
     if (!r.committed) { msg('রুম ভর্তি'); return; }
     const ns = r.snapshot.val() || {};
@@ -134,18 +155,47 @@ async function joinRoom(c, silent){
   localStorage.setItem('c29', JSON.stringify({code: c}));
   $('lobby').classList.add('hidden');
   $('game').classList.remove('hidden');
-  db.ref('rooms/'+c).on('value', x => { S = x.val(); render(); });
-  db.ref('hands/'+c+'/'+seat).on('value', x => { hand = vals(x.val()); render(); });
+  listen();
 }
 
-/* ============ 6. Deal ============ */
-async function deal(dealer){
+function listen(){
+  db.ref('rooms/'+code).on('value', x => {
+    S = x.val();
+    if (S && S.host === uid && !botListen) {
+      botListen = true;
+      db.ref('botHands/'+code).on('value', y => { botHandsCache = y.val() || {}; });
+    }
+    render();
+  });
+  db.ref('hands/'+code+'/'+mySeat).on('value', x => { hand = vals(x.val()); render(); });
+  if (!botTimer) botTimer = setInterval(botTick, 900);
+}
+
+/* ============ 6. Start & deal ============ */
+async function startGame(){
+  // খালি সিটে বট বসানো
+  await db.ref('rooms/'+code+'/seats').transaction(ss => {
+    ss = ss || {};
+    for (let i=0;i<4;i++) if (!ss[i]) ss[i] = {uid: 'bot'+i, name: 'বট '+(i+1), bot: true};
+    return ss;
+  });
+  const snap = (await db.ref('rooms/'+code).once('value')).val();
+  if (snap.phase !== 'lobby') return;
+  await deal(snap.dealer || 0, snap.seats);
+}
+
+async function deal(dealer, seats){
   const deck = [];
   for (const s of SUITS) for (const r of RANKS) deck.push({s, r});
   shuffle(deck);
-  const hands = {};
-  for (let i=0;i<4;i++) hands[i] = deck.slice(i*8, i*8+8);
-  await db.ref('hands/'+code).set(hands);
+  const humans = {}, bots = {};
+  for (let i=0;i<4;i++){
+    const h = deck.slice(i*8, i*8+8);
+    if (seats && seats[i] && seats[i].bot) bots[i] = h; else humans[i] = h;
+  }
+  await db.ref('hands/'+code).set(humans);
+  await db.ref('botHands/'+code).set(cnt(bots) ? bots : null);
+  botHandsCache = bots;
   await db.ref('rooms/'+code).update({
     phase: 'bidding', dealer, bidTurn: (dealer+1)%4,
     bids: null, highBid: 15, highBidder: -1,
@@ -153,56 +203,40 @@ async function deal(dealer){
     tricks: 0, teamPts: [0,0], roundMsg: null
   });
 }
-const startGame = () => deal(S.dealer || 0);
-const nextRound = () => deal((S.dealer + 1) % 4);
 
-/* ============ 7. Bidding — প্রতি খেলোয়াড় একবারই বিড/পাস করবে ============ */
-async function bid(v){                       // v = 0 মানে পাস
+const nextRound = () => deal((S.dealer + 1) % 4, S.seats);
+
+/* ============ 7. Bidding (প্রতি সিট একবার) ============ */
+async function bidAs(seat, v){                 // v = 0 মানে পাস
   await db.ref('rooms/'+code).transaction(s => {
-    if (!s || s.phase !== 'bidding' || s.bidTurn !== mySeat) return;
+    if (!s || s.phase !== 'bidding' || s.bidTurn !== seat) return;
     s.bids = s.bids || {};
-    if (s.bids[mySeat] !== undefined) return;   // আগে একবার বিড করা হয়ে গেছে
-    s.bids[mySeat] = v;
-    if (v > s.highBid) { s.highBid = v; s.highBidder = mySeat; }
+    if (s.bids[seat] !== undefined) return;
+    s.bids[seat] = v;
+    if (v > s.highBid) { s.highBid = v; s.highBidder = seat; }
     if (cnt(s.bids) >= 4) {
-      if (s.highBidder < 0) s.phase = 'redeal';   // সবাই পাস
+      if (s.highBidder < 0) s.phase = 'redeal';
       else { s.phase = 'trump'; s.turn = s.highBidder; }
       s.bidTurn = null;
     } else {
-      s.bidTurn = (mySeat+1) % 4;
+      s.bidTurn = (seat+1) % 4;
     }
     return s;
   });
 }
+const bid = v => bidAs(mySeat, v);
 
-async function chooseTrump(suit){
+async function chooseTrumpAs(seat, suit){
   await db.ref('rooms/'+code).transaction(s => {
-    if (!s || s.phase !== 'trump' || s.highBidder !== mySeat) return;
-    s.trump = suit; s.phase = 'playing'; s.turn = mySeat;
+    if (!s || s.phase !== 'trump' || s.highBidder !== seat) return;
+    s.trump = suit; s.phase = 'playing'; s.turn = seat;
     s.tricks = 0; s.teamPts = [0,0];
     return s;
   });
 }
+const chooseTrump = suit => chooseTrumpAs(mySeat, suit);
 
 /* ============ 8. Play ============ */
-function legal(c){
-  const n = cnt(S.table);
-  if (n === 0 || n === 4) return true;                  // নতুন ট্রিক
-  return c.s === S.leadSuit || !hand.some(x => x.s === S.leadSuit);   // রঙ মেলানো বাধ্যতামূলক
-}
-
-function winnerOf(cards, trump, lead){
-  const hasT = cards.some(x => x.c.s === trump);
-  let best = null, bv = -1;
-  for (const x of cards) {
-    let v = 0;
-    if (hasT) { if (x.c.s === trump) v = TORD[x.c.r]; }
-    else if (x.c.s === lead) v = PORD[x.c.r];
-    if (v > bv) { bv = v; best = x; }
-  }
-  return best;
-}
-
 function finishRound(s){
   const bt = s.highBidder % 2;
   const pts = s.teamPts[bt];
@@ -214,16 +248,13 @@ function finishRound(s){
   s.roundMsg = `দল ${bt+1} ডেকেছিল ${s.highBid}, পেয়েছে ${pts}। ${won ? 'ডাকা দল জিতেছে' : 'বিপক্ষ দল জিতেছে'}।`;
 }
 
-async function playIdx(i){ await play(viewHand[i]); }
-
-async function play(card){
-  if (!S || S.phase !== 'playing' || S.turn !== mySeat || !card || !legal(card)) return;
+async function playAs(seat, card){
   const r = await db.ref('rooms/'+code).transaction(s => {
-    if (!s || s.phase !== 'playing' || s.turn !== mySeat) return;
-    if (cnt(s.table) >= 4) { s.table = null; s.leadSuit = null; }   // আগের ট্রিক শেষ
+    if (!s || s.phase !== 'playing' || s.turn !== seat) return;
+    if (cnt(s.table) >= 4) { s.table = null; s.leadSuit = null; }
     s.table = s.table || {};
     if (cnt(s.table) === 0) s.leadSuit = card.s;
-    s.table[mySeat] = card;
+    s.table[seat] = card;
     if (cnt(s.table) === 4) {
       const cards = Object.entries(s.table).map(([k,c]) => ({seat: +k, c}));
       const w = winnerOf(cards, s.trump, s.leadSuit);
@@ -232,20 +263,72 @@ async function play(card){
       s.tricks += 1;
       s.turn = w.seat;
       if (s.tricks === 8) {
-        s.teamPts[w.seat % 2] += 1;          // শেষ ট্রিকের বোনাস
+        s.teamPts[w.seat % 2] += 1;     // শেষ ট্রিকের বোনাস
         finishRound(s);
       }
     } else {
-      s.turn = (mySeat+1) % 4;
+      s.turn = (seat+1) % 4;
     }
     return s;
   });
-  if (!r.committed) return;
-  const nh = hand.filter(c => !(c.s === card.s && c.r === card.r));
-  await db.ref('hands/'+code+'/'+mySeat).set(nh.length ? nh : null);
+  return r.committed;
 }
 
-/* ============ 9. Render ============ */
+async function removeCard(seat, card, handArr){
+  const nh = handArr.filter(c => !(c.s === card.s && c.r === card.r));
+  if (isBot(seat)) {
+    botHandsCache[seat] = nh;
+    await db.ref('botHands/'+code+'/'+seat).set(nh.length ? nh : null);
+  } else {
+    await db.ref('hands/'+code+'/'+seat).set(nh.length ? nh : null);
+  }
+}
+
+async function playIdx(i){ await play(viewHand[i]); }
+
+async function play(card){
+  if (!S || !card) return;
+  if (S.phase !== 'playing' || S.turn !== mySeat || !legalIn(card, hand, S.table, S.leadSuit)) return;
+  if (await playAs(mySeat, card)) await removeCard(mySeat, card, hand);
+}
+
+/* ============ 9. Bot (শুধু হোস্টের ব্রাউজার চালায়) ============ */
+async function botBid(seat){
+  const h = vals(botHandsCache[seat]);
+  const pts = h.reduce((a,c) => a + (PTS[c.r]||0), 0) + (h.some(c => c.r === 'J') ? 2 : 0);
+  let v = 0;
+  if (pts >= 6) { const want = Math.max(16, S.highBid + 1); if (want <= 28) v = want; }
+  await bidAs(seat, v);
+}
+
+async function botTrump(seat){
+  const h = vals(botHandsCache[seat]);
+  const score = {}; SUITS.forEach(s => score[s] = 0);
+  h.forEach(c => score[c.s] += (PTS[c.r]||0) + (c.r === 'J' ? 1 : 0));
+  const best = SUITS.reduce((a,b) => score[b] > score[a] ? b : a);
+  await chooseTrumpAs(seat, best);
+}
+
+async function botPlay(seat){
+  const h = vals(botHandsCache[seat]);
+  const ok = h.filter(c => legalIn(c, h, S.table, S.leadSuit));
+  if (!ok.length) return;
+  const c = ok[Math.floor(Math.random()*ok.length)];
+  if (await playAs(seat, c)) await removeCard(seat, c, h);
+}
+
+async function botTick(){
+  if (!S || S.host !== uid || busy || S.phase === 'lobby') return;
+  let job = null;
+  if (S.phase === 'bidding' && S.bidTurn != null && isBot(S.bidTurn)) job = () => botBid(S.bidTurn);
+  else if (S.phase === 'trump' && isBot(S.highBidder)) job = () => botTrump(S.highBidder);
+  else if (S.phase === 'playing' && isBot(S.turn)) job = () => botPlay(S.turn);
+  if (!job) return;
+  busy = true;
+  try { await job(); } finally { busy = false; }
+}
+
+/* ============ 10. Render ============ */
 function bidText(i){
   const b = S.bids && S.bids[i];
   if (b === undefined) return '';
@@ -260,14 +343,14 @@ function cardHTML(c, dis, onclick){
 
 function statusText(){
   const ph = S.phase;
-  if (ph === 'lobby')   return `সবাই বসলে হোস্ট খেলা শুরু করবে (${cnt(S.seats)}/৪ জন)`;
+  if (ph === 'lobby') return `সিট ${cnt(S.seats)}/৪। হোস্ট খেলা শুরু করলে খালি সিটে বট বসবে`;
   if (ph === 'bidding') {
     const high = S.highBid > 15 ? `সর্বোচ্চ বিড ${S.highBid} (${esc(nameOf(S.highBidder))})` : 'এখনও কেউ বিড করেনি';
     return (S.bidTurn === mySeat ? 'আপনার বিডের পালা' : `${esc(nameOf(S.bidTurn))}-এর বিড`) + ' · ' + high;
   }
-  if (ph === 'trump')   return S.highBidder === mySeat ? 'আপনি বিড জিতেছেন, তুরুপ বেছে নিন' : `${esc(nameOf(S.highBidder))} তুরুপ বাছছে`;
+  if (ph === 'trump') return S.highBidder === mySeat ? 'আপনি বিড জিতেছেন, তুরুপ বেছে নিন' : `${esc(nameOf(S.highBidder))} তুরুপ বাছছে`;
   if (ph === 'playing') return `${S.turn === mySeat ? 'আপনার চাল' : esc(nameOf(S.turn))+'-এর চাল'} · ডাকা ${S.highBid} · তুরুপ ${S.trump} · ট্রিক ${S.tricks||0}/৮`;
-  if (ph === 'redeal')  return 'কেউ বিড করেনি, নতুন করে তাস বণ্টন হবে';
+  if (ph === 'redeal') return 'কেউ বিড করেনি, নতুন করে তাস বণ্টন হবে';
   if (ph === 'roundOver') return esc(S.roundMsg || '');
   return '';
 }
@@ -284,7 +367,7 @@ function render(){
 
   $('seats').innerHTML = [0,1,2,3].map(i => `
     <div class="seat ${ph==='playing' && S.turn===i ? 'turn' : ''}">
-      <b>${esc(nameOf(i))}</b> ${i===mySeat ? '(আপনি)' : ''}<br>
+      <b>${esc(nameOf(i))}</b> ${i===mySeat ? '(আপনি)' : ''} ${isBot(i) ? '🤖' : ''}<br>
       <span class="small">সিট ${i+1} · ${bidText(i)}${i===S.highBidder && ph!=='lobby' && ph!=='bidding' ? ' · বিডার' : ''}</span>
     </div>`).join('');
 
@@ -296,7 +379,7 @@ function render(){
       </div></div>` : '';
 
   let act = '';
-  if (ph==='lobby' && isHost && cnt(S.seats)===4) act += `<button onclick="startGame()">খেলা শুরু</button>`;
+  if (ph==='lobby' && isHost) act += `<button onclick="startGame()">খেলা শুরু</button>`;
   if (ph==='bidding' && S.bidTurn===mySeat) {
     for (let v=16; v<=28; v++) act += `<button ${v<=S.highBid?'disabled':''} onclick="bid(${v})">${v}</button>`;
     act += `<button onclick="bid(0)">পাস</button>`;
@@ -311,7 +394,7 @@ function render(){
   viewHand = hand.slice().sort((a,b) => SUITS.indexOf(a.s)-SUITS.indexOf(b.s) || RANKS.indexOf(a.r)-RANKS.indexOf(b.r));
   const canPlay = ph==='playing' && S.turn===mySeat;
   $('hand').innerHTML = `<div class="box"><div class="small">আপনার তাস (${hand.length})</div>
-    <div class="cards">${viewHand.map((c,i) => cardHTML(c, !(canPlay && legal(c)), `playIdx(${i})`)).join('')}</div></div>`;
+    <div class="cards">${viewHand.map((c,i) => cardHTML(c, !(canPlay && legalIn(c, hand, S.table, S.leadSuit)), `playIdx(${i})`)).join('')}</div></div>`;
 }
 </script>
 </body>
