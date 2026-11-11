@@ -16,21 +16,33 @@ body{margin:0;font-family:system-ui,'Noto Sans Bengali',sans-serif;background:#0
 input{padding:10px;border-radius:8px;border:none;font-size:16px;width:100%;margin:4px 0}
 button{padding:9px 13px;border:none;border-radius:8px;background:var(--gold);color:#222;font-size:15px;font-weight:600;cursor:pointer;margin:3px}
 button:disabled{background:#555;color:#999;cursor:not-allowed}
+button.alt{background:#3498db;color:#fff}
 .small{font-size:12px;opacity:.85}
 .score{display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;font-size:14px}
 .score b{color:var(--gold)}
+.wl{display:inline-block;padding:2px 8px;border-radius:6px;font-weight:700}
+.wl.win{background:#2ecc71;color:#063}
+.wl.lose{background:#e74c3c;color:#fff}
 .table{position:relative;width:100%;max-width:600px;height:340px;margin:8px auto;border-radius:50%/42%;background:radial-gradient(ellipse at center,var(--f1),var(--f2));border:10px solid #7a4a1d;box-shadow:inset 0 0 30px #0008,0 4px 12px #0006}
-.seat{position:absolute;width:104px;text-align:center;background:#063620dd;border-radius:10px;padding:5px;font-size:13px;transition:box-shadow .3s}
+.seat{position:absolute;width:118px;text-align:center;background:#063620dd;border-radius:10px;padding:5px;font-size:13px;transition:box-shadow .3s}
 .seat.turn{box-shadow:0 0 0 3px var(--gold)}
 .seat.win{box-shadow:0 0 0 3px #7CFC00}
-.s1{left:4px;top:50%;transform:translateY(-50%)}
-.s2{top:4px;left:50%;transform:translateX(-50%)}
-.s3{right:4px;top:50%;transform:translateY(-50%)}
-.center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;background:#0007;border-radius:12px;padding:6px 10px;min-width:110px}
+.s1{left:2px;top:50%;transform:translateY(-50%)}
+.s2{top:2px;left:50%;transform:translateX(-50%)}
+.s3{right:2px;top:50%;transform:translateY(-50%)}
+.form{display:flex;gap:2px;justify-content:center;margin-top:3px}
+.form span{width:16px;height:16px;border-radius:3px;font-size:10px;line-height:16px;font-weight:700}
+.form .W{background:#2ecc71;color:#063}
+.form .L{background:#e74c3c;color:#fff}
+.coins{color:var(--gold);font-weight:700;font-size:12px}
+.dbl{color:#ff8a65;font-weight:700;font-size:12px}
+.center{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;background:#0007;border-radius:12px;padding:6px 10px;min-width:120px}
 .trumpS{font-size:34px;line-height:1}
+.pot{color:var(--gold);font-weight:700}
 .pc{position:absolute;width:50px;height:72px;background:#fff;color:#222;border-radius:7px;font-weight:700;text-align:center;font-size:15px;box-shadow:0 2px 6px #0008;transition:all .35s;display:flex;flex-direction:column;align-items:center;justify-content:center;animation:pop .35s}
 .pc.red{color:#c0392b}
 .pc small{font-size:10px}
+.pc .pts{position:absolute;top:-6px;right:-6px;font-size:10px;background:var(--gold);color:#222;border-radius:6px;padding:0 4px}
 @keyframes pop{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:scale(1)}}
 .pc0{bottom:12px;left:50%;transform:translateX(-50%)}
 .pc1{left:58px;top:50%;transform:translateY(-50%)}
@@ -41,6 +53,7 @@ button:disabled{background:#555;color:#999;cursor:not-allowed}
 .card.red{color:#c0392b}
 .card small{font-size:12px}
 .card.ok{border-color:var(--gold);cursor:pointer}
+.card.back{background:#1e4fa8;color:#fff;font-size:22px}
 .card:disabled{opacity:.45;cursor:not-allowed}
 .card .pts{position:absolute;top:2px;left:3px;font-size:10px;color:#222;background:var(--gold);border-radius:6px;padding:0 3px}
 .hist{font-size:12px;opacity:.9;line-height:1.6}
@@ -52,7 +65,9 @@ button:disabled{background:#555;color:#999;cursor:not-allowed}
 <div id="lobby" class="box">
   <h2>২৯ কার্ড — অনলাইন</h2>
   <input id="name" placeholder="আপনার নাম">
-  <button onclick="createRoom()">নতুন রুম বানান</button>
+  <input id="stake" placeholder="প্রতি রাউন্ডের বাজি (কয়েন), ডিফল্ট ১০" inputmode="numeric">
+  <button onclick="createRoom(false)">বন্ধুর সাথে খেলা (নতুন রুম)</button>
+  <button class="alt" onclick="createRoom(true)">প্র্যাকটিস (বটের সাথে)</button>
   <hr>
   <input id="code" placeholder="রুম কোড (৪ সংখ্যা)" inputmode="numeric">
   <button onclick="joinRoom($('code').value.trim())">রুমে যোগ দিন</button>
@@ -89,10 +104,12 @@ const RANKS = ['7','8','9','10','J','Q','K','A'];
 const PTS   = {J:3, '9':2, A:1, '10':1};
 const TORD  = {J:8, '9':7, A:6, '10':5, K:4, Q:3, '8':2, '7':1};
 const PORD  = {A:8, '10':7, K:6, Q:5, J:4, '9':3, '8':2, '7':1};
+const START_COINS = 1000;
 
 /* ============ 3. State & helpers ============ */
 let uid = null, code = null, mySeat = -1, S = null, hand = [], viewHand = [];
 let botHandsCache = {}, botListen = false, botTimer = null, busy = false, nextQueued = false;
+let showCards = true;   // শুধু আপনার স্ক্রিনে তাস দেখানো/লুকানো (অন্যদের দেখা যায় না)
 
 const $ = id => document.getElementById(id);
 const esc = t => String(t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -102,6 +119,8 @@ const nameOf = i => (S && S.seats && S.seats[i]) ? S.seats[i].name : 'খাল�
 const isBot = i => !!(S && S.seats && S.seats[i] && S.seats[i].bot);
 const isRed = s => s === '♥' || s === '♦';
 const msg = t => { $('lobbyMsg').textContent = t; };
+const stakeOf = s => (s && s.stake) || 10;
+const oppSeats = bt => [0,1,2,3].filter(i => i % 2 !== bt);
 
 function shuffle(a){
   for (let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
@@ -138,16 +157,22 @@ auth.onAuthStateChanged(u => {
 });
 
 /* ============ 5. Room ============ */
-async function createRoom(){
+async function createRoom(practice){
   const name = $('name').value.trim() || 'খেলোয়াড়';
+  const stake = Math.max(1, parseInt($('stake').value, 10) || 10);
   let c;
   do { c = String(1000 + Math.floor(Math.random()*9000)); }
   while ((await db.ref('rooms/'+c).once('value')).exists());
   await db.ref('rooms/'+c).set({
-    host: uid, phase: 'lobby', dealer: 0,
-    seats: {0: {uid, name}}, scores: [0,0], teamPts: [0,0], history: null
+    host: uid, phase: 'lobby', dealer: 0, stake,
+    seats: {0: {uid, name}},
+    scores: [0,0], teamPts: [0,0], history: null,
+    coins: {0: START_COINS, 1: START_COINS, 2: START_COINS, 3: START_COINS},
+    form: {0: '', 1: '', 2: '', 3: ''}
   });
-  joinRoom(c);
+  await joinRoom(c);
+  if (practice) await startGame();
+  else msg('রুম কোড: ' + c + ' (বন্ধুকে এই কোড দিন)');
 }
 
 async function joinRoom(c, silent){
@@ -223,7 +248,8 @@ async function deal(dealer, seats){
     phase: 'bidding', dealer, bidTurn: (dealer+1)%4,
     bids: null, highBid: 15, highBidder: -1,
     trump: null, table: null, leadSuit: null, turn: null, lastWinner: null,
-    tricks: 0, teamPts: [0,0], roundMsg: null
+    tricks: 0, teamPts: [0,0], roundMsg: null,
+    doubles: null, mult: 1, seatPts: {0:0,1:0,2:0,3:0}
   });
 }
 
@@ -252,12 +278,33 @@ const bid = v => bidAs(mySeat, v);
 async function chooseTrumpAs(seat, suit){
   await db.ref('rooms/'+code).transaction(s => {
     if (!s || s.phase !== 'trump' || s.highBidder !== seat) return;
-    s.trump = suit; s.phase = 'playing'; s.turn = seat;
+    s.trump = suit; s.phase = 'double'; s.turn = null;
+    s.doubles = {};
     s.tricks = 0; s.teamPts = [0,0];
     return s;
   });
 }
 const chooseTrump = suit => chooseTrumpAs(mySeat, suit);
+
+/* ============ 7b. Double (বিপক্ষ দল) ============ */
+async function doubleAs(seat, yes){
+  await db.ref('rooms/'+code).transaction(s => {
+    if (!s || s.phase !== 'double') return;
+    const bt = s.highBidder % 2;
+    if (seat % 2 === bt) return;                       // শুধু বিপক্ষ দল
+    s.doubles = s.doubles || {};
+    if (s.doubles[seat] !== undefined) return;
+    s.doubles[seat] = yes ? 1 : 0;
+    const opps = oppSeats(bt);
+    if (opps.every(i => s.doubles[i] !== undefined)) {
+      s.mult = opps.some(i => s.doubles[i] === 1) ? 2 : 1;
+      s.phase = 'playing';
+      s.turn = s.highBidder;
+    }
+    return s;
+  });
+}
+const doubleMe = yes => doubleAs(mySeat, yes);
 
 /* ============ 8. Play ============ */
 function finishRound(s){
@@ -265,10 +312,23 @@ function finishRound(s){
   const pts = s.teamPts[bt];
   const won = pts >= s.highBid;
   const wt = won ? bt : 1-bt;
+  const stake = stakeOf(s) * (s.mult || 1);
+
   s.scores = s.scores || [0,0];
   s.scores[wt] += 1;
+
+  s.form = s.form || {};
+  s.coins = s.coins || {};
+  for (let i=0;i<4;i++) {
+    const win = (i % 2) === wt;
+    s.form[i] = ((s.form[i] || '') + (win ? 'W' : 'L')).slice(-5);
+    const cur = (s.coins[i] ?? START_COINS);
+    s.coins[i] = Math.max(0, cur + (win ? stake : -stake));
+  }
+
   s.phase = 'roundOver';
-  s.roundMsg = `দল ${bt+1} ডেকেছিল ${s.highBid}, পেয়েছে ${pts}। ${won ? 'ডাকা দল জিতেছে' : 'বিপক্ষ দল জিতেছে'}।`;
+  const dbl = (s.mult || 1) === 2 ? ' (ডাবল)' : '';
+  s.roundMsg = `দল ${bt+1} ডেকেছিল ${s.highBid}, পেয়েছে ${pts}${dbl}। ${won ? 'ডাকা দল জিতেছে' : 'বিপক্ষ দল জিতেছে'}।`;
   s.history = (vals(s.history)).concat([s.roundMsg]).slice(-6);
 }
 
@@ -284,6 +344,8 @@ async function playAs(seat, card){
       const w = winnerOf(cards, s.trump, s.leadSuit);
       const pts = cards.reduce((a,x) => a + (PTS[x.c.r] || 0), 0);
       s.teamPts[w.seat % 2] += pts;
+      s.seatPts = s.seatPts || {};
+      s.seatPts[w.seat] = (s.seatPts[w.seat] || 0) + pts;
       s.tricks += 1;
       s.turn = w.seat;
       s.lastWinner = w.seat;
@@ -344,6 +406,13 @@ async function botTrump(seat){
   await chooseTrumpAs(seat, evalHand(h).s);
 }
 
+async function botDouble(seat){
+  const h = vals(botHandsCache[seat]);
+  const {v} = evalHand(h);
+  const yes = v >= 9 && Math.random() < 0.5;
+  await doubleAs(seat, yes);
+}
+
 function rk(c){
   if (c.s === S.trump) return 100 + TORD[c.r];
   if (c.s === S.leadSuit) return 50 + PORD[c.r];
@@ -388,6 +457,11 @@ async function botTick(){
   let job = null;
   if (S.phase === 'bidding' && S.bidTurn != null && isBot(S.bidTurn)) job = () => botBid(S.bidTurn);
   else if (S.phase === 'trump' && isBot(S.highBidder)) job = () => botTrump(S.highBidder);
+  else if (S.phase === 'double') {
+    const bt = S.highBidder % 2;
+    const pending = oppSeats(bt).find(i => isBot(i) && !(S.doubles && S.doubles[i] !== undefined));
+    if (pending !== undefined) job = () => botDouble(pending);
+  }
   else if (S.phase === 'playing' && isBot(S.turn)) job = () => botPlay(S.turn);
   if (!job) return;
   busy = true;
@@ -401,8 +475,14 @@ function bidText(i){
   return b === 0 ? 'পাস' : `বিড ${b}`;
 }
 
-function cardHTML(c, pts){
-  return `<div class="card ${isRed(c.s)?'red':''}">${pts?`<span class="pts">${pts}</span>`:''}${c.r}<small>${c.s}</small></div>`;
+function formHTML(i){
+  const f = (S.form && S.form[i]) || '';
+  if (!f) return '';
+  return `<div class="form">${f.split('').map(c => `<span class="${c}">${c==='W'?'জ':'হ'}</span>`).join('')}</div>`;
+}
+
+function coinsOf(i){
+  return (S.coins && S.coins[i] != null) ? S.coins[i] : START_COINS;
 }
 
 function statusText(){
@@ -413,6 +493,11 @@ function statusText(){
     return (S.bidTurn === mySeat ? 'আপনার বিডের পালা' : `${esc(nameOf(S.bidTurn))}-এর বিড`) + ' · ' + high;
   }
   if (ph === 'trump') return S.highBidder === mySeat ? 'আপনি বিড জিতেছেন, তুরুপ বেছে নিন' : `${esc(nameOf(S.highBidder))} তুরুপ বাছছে`;
+  if (ph === 'double') {
+    const bt = S.highBidder % 2;
+    if (bt === mySeat % 2) return 'বিপক্ষ দল ডাবল করবে কিনা ঠিক করছে';
+    return 'ডাবল করবেন কিনা ঠিক করুন';
+  }
   if (ph === 'playing') return S.turn === mySeat ? 'আপনার চাল' : `${esc(nameOf(S.turn))}-এর চাল`;
   if (ph === 'redeal') return 'কেউ বিড করেনি, ৫ সেকেন্ডে নতুন বণ্টন হবে';
   if (ph === 'roundOver') return esc(S.roundMsg || '') + ' (৫ সেকেন্ডে পরের রাউন্ড)';
@@ -424,20 +509,28 @@ function seatHTML(rel){
   const cls = ['seat', 's'+rel];
   if (S.phase === 'playing' && S.turn === i) cls.push('turn');
   if (S.lastWinner === i && cnt(S.table) === 4) cls.push('win');
+  const dbl = S.doubles && S.doubles[i] === 1 ? ' <span class="dbl">ডাবল</span>' : '';
+  const taken = (S.seatPts && S.seatPts[i]) || 0;
   return `<div class="${cls.join(' ')}"><b>${esc(nameOf(i))}</b> ${isBot(i)?'🤖':''}
-    <div class="small">${bidText(i)}${i===S.highBidder && S.phase!=='lobby' && S.phase!=='bidding' ? ' · বিডার' : ''}</div></div>`;
+    <div class="small">${bidText(i)}${i===S.highBidder && S.phase!=='lobby' && S.phase!=='bidding' ? ' · বিডার' : ''}${dbl}</div>
+    <div class="small">পয়েন্ট: ${taken}</div>
+    ${formHTML(i)}
+    <div class="coins">🪙 ${coinsOf(i)}</div></div>`;
 }
 
 function centerHTML(){
   const ph = S.phase;
-  let trump = S.trump
+  const trump = S.trump
     ? `<div class="trumpS" style="color:${isRed(S.trump)?'#ff7a7a':'#fff'}">${S.trump}</div><div class="small">তুরুপ</div>`
     : `<div class="small">তুরুপ: —</div>`;
   let info = '';
   if (ph === 'playing') info = `ট্রিক ${S.tricks||0}/৮ · ডাকা ${S.highBid}`;
+  else if (ph === 'double') info = 'ডাবল পর্ব';
   else if (ph === 'bidding') info = S.highBid > 15 ? `সর্বোচ্চ ${S.highBid}` : 'বিডিং চলছে';
   else if (ph === 'lobby') info = `রুম ${esc(code)}`;
-  return `<div class="center">${trump}<div class="small">${info}</div></div>`;
+  const mult = (S.mult || 1) === 2 && (ph === 'playing' || ph === 'roundOver') ? ' · ×২' : '';
+  const pot = `<div class="pot">পট: ${stakeOf(S)*4*(S.mult||1)} 🪙${mult}</div>`;
+  return `<div class="center">${trump}<div class="small">${info}</div>${pot}</div>`;
 }
 
 function render(){
@@ -445,19 +538,22 @@ function render(){
   const isHost = S.host === uid;
   const ph = S.phase;
   const mt = mySeat % 2;
+  const won = S.scores?.[mt] || 0;
+  const lost = S.scores?.[1-mt] || 0;
 
   $('info').innerHTML = `
     <div class="score">
-      <span>রুম <b>${esc(code)}</b></span>
-      <span>আমরা: <b>${S.scores?.[mt]||0}</b> · ওরা: <b>${S.scores?.[1-mt]||0}</b></span>
+      <span>রুম <b>${esc(code)}</b> · বাজি ${stakeOf(S)} 🪙</span>
+      <span>Win <span class="wl win">${won}</span> Lose <span class="wl lose">${lost}</span></span>
     </div>
     <div class="status">${statusText()}</div>
-    ${ph==='playing'||ph==='roundOver' ? `<div class="small">এই রাউন্ড — আমরা: ${S.teamPts?.[mt]||0} · ওরা: ${S.teamPts?.[1-mt]||0}</div>` : ''}`;
+    ${ph==='playing'||ph==='roundOver' ? `<div class="small">এই রাউন্ড — আমাদের দল: ${S.teamPts?.[mt]||0} · বিপক্ষ: ${S.teamPts?.[1-mt]||0}</div>` : ''}`;
 
   const t = S.table || {};
   const tableCards = Object.entries(t).map(([k,c]) => {
     const rel = (+k - mySeat + 4) % 4;
-    return `<div class="pc pc${rel} ${isRed(c.s)?'red':''}">${c.r}<small>${c.s}</small></div>`;
+    const p = PTS[c.r] ? `<span class="pts">${PTS[c.r]}</span>` : '';
+    return `<div class="pc pc${rel} ${isRed(c.s)?'red':''}">${p}${c.r}<small>${c.s}</small></div>`;
   }).join('');
 
   $('table').innerHTML = `
@@ -465,13 +561,13 @@ function render(){
       ${seatHTML(1)}${seatHTML(2)}${seatHTML(3)}
       ${centerHTML()}
       ${tableCards}
-      <div class="pc pc0 hidden"></div>
     </div>`;
 
-  $('history').innerHTML = (vals(S.history).length)
-    ? `<div class="small">আগের রাউন্ড</div><div class="hist">${vals(S.history).map(x=>esc(x)).join('<br>')}</div>`
+  const hist = vals(S.history);
+  $('history').innerHTML = hist.length
+    ? `<div class="small">আগের রাউন্ড</div><div class="hist">${hist.map(x=>esc(x)).join('<br>')}</div>`
     : '';
-  $('history').classList.toggle('hidden', !vals(S.history).length);
+  $('history').classList.toggle('hidden', !hist.length);
 
   let act = '';
   if (ph==='lobby' && isHost) act += `<button onclick="startGame()">খেলা শুরু</button>`;
@@ -482,15 +578,21 @@ function render(){
   if (ph==='trump' && S.highBidder===mySeat) {
     act += SUITS.map(s => `<button onclick="chooseTrump('${s}')">${s}</button>`).join('');
   }
+  if (ph==='double' && mySeat % 2 !== S.highBidder % 2 && !(S.doubles && S.doubles[mySeat] !== undefined)) {
+    act += `<button onclick="doubleMe(true)">ডাবল (×২)</button><button onclick="doubleMe(false)">নরমাল</button>`;
+  }
   if ((ph==='redeal' || ph==='roundOver') && isHost) act += `<button onclick="nextRound()">পরের রাউন্ড এখনই</button>`;
   $('actions').innerHTML = act;
   $('actions').classList.toggle('hidden', !act);
 
   viewHand = hand.slice().sort((a,b) => SUITS.indexOf(a.s)-SUITS.indexOf(b.s) || RANKS.indexOf(a.r)-RANKS.indexOf(b.r));
   const canPlay = ph==='playing' && S.turn===mySeat;
-  $('hand').innerHTML = `<div class="box"><div class="small">আপনার তাস (${hand.length})${S.trump?' · তুরুপ '+S.trump:''}</div>
+  $('hand').innerHTML = `<div class="box">
+    <div class="small">আপনার তাস (${hand.length})${S.trump?' · তুরুপ '+S.trump:''}
+      <button onclick="showCards=!showCards;render()" style="padding:3px 8px;font-size:12px;margin-left:6px">${showCards?'তাস লুকান':'তাস দেখুন'}</button></div>
     <div class="hand">${viewHand.map((c,i) => {
       const ok = canPlay && legalIn(c, hand, S.table, S.leadSuit);
+      if (!showCards) return `<button class="card back" ${ok?'':'disabled'} onclick="playIdx(${i})">🂠</button>`;
       return `<button class="card ${isRed(c.s)?'red':''} ${ok?'ok':''}" ${ok?'':'disabled'} onclick="playIdx(${i})">
         ${PTS[c.r] ? `<span class="pts">${PTS[c.r]}</span>` : ''}${c.r}<small>${c.s}</small></button>`;
     }).join('')}</div></div>`;
